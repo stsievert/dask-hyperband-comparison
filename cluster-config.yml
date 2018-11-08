@@ -1,0 +1,128 @@
+# Steps to launch cluster
+# =======================
+# (from z2jh docs) On Google Cloud Shell in browser,
+#
+# ``` shell
+# ZONE=us-east1-c
+# gcloud config set compute/zone $ZONE
+# CLUSTERNAME=<YOUR-CLUSTER-NAME>
+# gcloud beta container clusters create $CLUSTERNAME \
+#   --machine-type n1-standard-2 \
+#   --num-nodes 2 \
+#   --cluster-version latest \
+#   --node-labels hub.jupyter.org/node-purpose=core
+# EMAIL=ssievert@anaconda.com
+# kubectl create clusterrolebinding cluster-admin-binding \
+#   --clusterrole=cluster-admin \
+#     --user=$EMAIL
+# ```
+#
+# From [z2jh-helm] docs:
+#
+# ``` shell
+# curl https://raw.githubusercontent.com/kubernetes/helm/master/scripts/get | bash
+# kubectl --namespace kube-system create sa tiller
+# kubectl create clusterrolebinding tiller --clusterrole cluster-admin --serviceaccount=kube-system:tiller
+# helm init --service-account tiller
+# ```
+#
+# [z2jh-helm]:https://zero-to-jupyterhub.readthedocs.io/en/v0.4-doc/setup-helm.html
+# [z2jh]:https://zero-to-jupyterhub.readthedocs.io/en/latest/google/step-zero-gcp.html
+#
+# Notes from debugging session with Tom:
+# ======================================
+# Install workflow:
+# helm install stable/dask --name=dask --namespace=dask -f config.yml
+#
+# Debug:
+# make changes on local machine
+# helm upgrade dask stable/dask -f config.yml
+# # wait
+#
+# Hack solution:
+# def run_pip_udate():
+#     os.system('...')
+#     subprocess.call('...')  # or this
+#
+# client.run(run_pip_update)  # for dask
+# client.restart()
+# run_pip_update()  # locally
+#
+# Notes:
+# replics <--> gcloud --num_workers
+# "cpu" here means "one cpu core"
+#
+#
+# ### begin copy+paste (with some modifications for EXTRA_PIP_PACKAGES)
+# nameOverride: dask
+# fullnameOverride: dask
+
+scheduler:
+  name: scheduler
+  image:
+    repository: "daskdev/dask"
+    tag: "0.18.1"
+    pullPolicy: Always # IfNotPresent
+  replicas: 1
+  serviceType: "LoadBalancer"
+  servicePort: 8786
+  resources: {}
+    # limits:
+    #   cpu: 1.8
+    #   memory: 6G
+    # requests:
+    #   cpu: 1.8
+    #   memory: 6G
+
+webUI:
+  name: webui
+  servicePort: 80
+
+worker:
+  name: worker
+  image:
+    repository: "daskdev/dask"
+    tag: "0.18.1"
+    pullPolicy: Always # IfNotPresent
+  replicas: 16
+  aptPackages: >-
+    build-essential
+  default_resources:  # overwritten by resource limits if they exist
+    cpu: 1
+    memory: "4GiB"
+  env:
+    - name: EXTRA_CONDA_PACKAGES
+      value: pytorch-cpu torchvision-cpu -c pytorch
+    - name: EXTRA_PIP_PACKAGES
+      value: s3fs seaborn toolz scikit-image scikit-learn tqdm PyYAML keras tensorflow git+https://github.com/dnouri/skorch git+https://github.com/stsievert/dask-ml@hyperband-scale
+  resources:
+    limits:
+      cpu: 2
+      memory: 6G
+    requests:
+      cpu: 2
+      memory: 6G
+
+jupyter:
+  name: jupyter
+  enabled: true
+  image:
+    repository: "daskdev/dask-notebook"
+    tag: "0.18.1"
+    pullPolicy: Always # IfNotPresent
+  replicas: 1
+  serviceType: "LoadBalancer"
+  servicePort: 80
+  password: 'sha1:aae8550c0a44:9507d45e087d5ee481a5ce9f4f16f37a0867318c'  # 'dask'
+  env:
+    - name: EXTRA_CONDA_PACKAGES
+      value: pytorch-cpu torchvision-cpu -c pytorch
+    - name: EXTRA_PIP_PACKAGES
+      value: s3fs seaborn toolz scikit-image scikit-learn tqdm PyYAML keras tensorflow git+https://github.com/dnouri/skorch git+https://github.com/stsievert/dask-ml@hyperband-scale
+  resources:
+    limits:
+      cpu: 2
+      memory: 6G
+    requests:
+      cpu: 2
+      memory: 6G
