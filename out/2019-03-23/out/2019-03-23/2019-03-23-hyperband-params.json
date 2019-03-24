@@ -1,0 +1,1 @@
+{"aggressiveness": 3, "max_iter": 243, "patience": false, "random_state": 42, "scores_per_fit": 1, "scoring": null, "test_size": null, "tol": 0.001}
