@@ -1,4 +1,6 @@
-from keras.datasets import mnist
+#from keras.datasets import mnist
+import torch
+from torchvision import datasets, transforms
 import numpy as np
 import skimage.util
 import random
@@ -37,16 +39,43 @@ def blur_img(img):
     return y.flat[:]
 
 
-def dataset(n=None):
-    (x_train, _), (x_test, _) = mnist.load_data()
-    x = np.concatenate((x_train, x_test))
-    if n:
-        x = x[:n]
-    else:
-        n = int(70e3)
-    x = x.astype("float32") / 255.
-    x = np.reshape(x, (len(x), 28 * 28))
+def _get_dataset(library="pytorch"):
+    if library == "mnist":
+        (x_train, _), (x_test, _) = mnist.load_data()
+        x = np.concatenate((x_train, x_test))
+        if n:
+            x = x[:n]
+        else:
+            n = int(70e3)
+        x = x.astype("float32") / 255.
+        x = np.reshape(x, (len(x), 28 * 28))
+        return x
+    elif library == "pytorch":
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            # transforms.Normalize((0.1307,), (0.3081,))
+        ])
 
+        train_loader = torch.utils.data.DataLoader(
+            datasets.MNIST('../data', train=True, download=True,
+                           transform=transform)
+        )
+        test_loader = torch.utils.data.DataLoader(
+            datasets.MNIST('../data', train=False, download=True,
+                           transform=transform)
+        )
+        train_imgs = [images.numpy() for images, labels in train_loader]
+        test_imgs = [images.numpy() for images, labels in test_loader]
+        imgs = train_imgs + test_imgs
+        x = np.concatenate(imgs)
+        assert x.shape == (70_000, 1, 28, 28)
+        x = x.reshape(len(x), 28*28)
+        assert 0 <= x.min() and 0.9 <= x.max() <= 1
+        return x
+    else:
+        raise ValueError("wrong library to get MNIST dataset")
+def dataset(n=None):
+    x = _get_dataset()
     y = np.apply_along_axis(train_formatting, 1, x)
 
     clean = y.copy()
@@ -66,3 +95,6 @@ def dataset(n=None):
 #     noisy = noisy.reshape(-1, 1, 28, 28).astype("float32")
 #     clean = clean.reshape(-1, 1, 28, 28).astype("float32")
     return noisy, clean
+
+if __name__ == "__main__":
+    x = _get_dataset()
