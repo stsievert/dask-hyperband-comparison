@@ -1,0 +1,1 @@
+{"params": {"train_split": null, "optimizer__weight_decay": 1.535275028780421e-05, "optimizer__nesterov": true, "optimizer__momentum": 0.6386386386386387, "optimizer__lr": 3.909237823445728, "optimizer": "SGD", "module__init": "xavier_normal_", "module__activation": "ELU", "batch_size": 64}, "score": -0.09691161662340164}

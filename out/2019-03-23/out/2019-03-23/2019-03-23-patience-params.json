@@ -1,1 +1,0 @@
-{"decay_rate": 0, "max_iter": 243, "n_initial_parameters": 64, "patience": 24, "random_state": 42, "scores_per_fit": 1, "scoring": null, "test_size": null, "tol": 0.001}
