@@ -49,12 +49,6 @@ class Autoencoder(nn.Module):
             nn.Linear(inter_dim, 28 * 28),
             nn.Sigmoid()
         ]
-        layers = [
-            nn.Linear(latent_dim, 28 * 28),
-            nn.Sigmoid()
-        ]
-        msg = "Woah! Don't you want an activatino in the decoder? (or wait -- you ahve a sigmoid..."
-        raise NotImplemented(msg)
         for layer in layers:
             if hasattr(layer, 'weight') and layer.weight.data.dim() > 1:
                 _initialize(init_method, layer, gain=gain)
