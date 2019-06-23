@@ -2,22 +2,32 @@
 import torch
 from torchvision import datasets, transforms
 import numpy as np
-import skimage.util
 import random
 
 import skimage.filters
 import skimage
 import scipy.signal
+from sklearn.utils import check_random_state
+from skimage.util import random_noise
 
 
-def noise_img(x):
+def noise_img(x, random_state=None):
+    assert isinstance(random_state, float) or random_state is None
+    if random_state:
+        y = x * random_state
+        assert y.ndim == 1
+        random_state = abs(hash(tuple(y))) % (2 ** 30)
+    else:
+        random_state = None
+    random_state = check_random_state(random_state)
     noises = [
-        {"mode": "s&p", "amount": np.random.uniform(0.1, 0.1)},
-        {"mode": "gaussian", "var": np.random.uniform(0.10, 0.15)},
+        {"mode": "s&p", "amount": random_state.uniform(0.1, 0.1)},
+        {"mode": "gaussian", "var": random_state.uniform(0.10, 0.15)},
     ]
     # noise = random.choice(noises)
     noise = noises[1]
-    return skimage.util.random_noise(x, **noise)
+    seed = random_state.randint(2 ** 30)
+    return random_noise(x, seed=seed, **noise)
 
 
 def train_formatting(img):
@@ -74,7 +84,9 @@ def _get_dataset(library="pytorch"):
         return x
     else:
         raise ValueError("wrong library to get MNIST dataset")
-def dataset(n=None):
+
+def dataset(n=None, random_state=None):
+    random_state = check_random_state(random_state)
     x = _get_dataset()
     y = np.apply_along_axis(train_formatting, 1, x)
 
@@ -88,7 +100,7 @@ def dataset(n=None):
     random.shuffle(order)
 
     for fn in order:
-        noisy = np.apply_along_axis(fn, 1, noisy)
+        noisy = np.apply_along_axis(fn, 1, noisy, random_state=random_state.rand())
 
     noisy = noisy.astype("float32")
     clean = clean.astype("float32")
