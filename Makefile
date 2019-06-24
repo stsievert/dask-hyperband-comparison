@@ -8,6 +8,8 @@ install:
 worker:
 	# Run an c5.4xlarge
 	# Scheduler on c5.2xlarge
+	#
+	# This command is used for EC2.
 	export OMP_NUM_THREADS=2; dask-worker --nprocs 5 --nthreads 1 --memory-limit="4GB" 172.31.20.153:8786
 
 
