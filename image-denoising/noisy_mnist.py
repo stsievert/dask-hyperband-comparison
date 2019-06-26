@@ -15,19 +15,21 @@ def noise_img(x, random_state=None):
     assert isinstance(random_state, float) or random_state is None
     if random_state:
         y = x * random_state
-        assert y.ndim == 1
+        # assert y.ndim == 1
         random_state = abs(hash(tuple(y))) % (2 ** 30)
+        # random_state = (np.abs(x) * random_state).sum() % (2 ** 30)
     else:
         random_state = None
     random_state = check_random_state(random_state)
     noises = [
         {"mode": "s&p", "amount": random_state.uniform(0.1, 0.1)},
-        {"mode": "gaussian", "var": random_state.uniform(0.10, 0.15)},
+        {"mode": "gaussian", "var": random_state.uniform(0.02, 0.12)},
     ]
     # noise = random.choice(noises)
     noise = noises[1]
     seed = random_state.randint(2 ** 30)
-    return random_noise(x, seed=seed, **noise)
+    img = random_noise(x, seed=seed, **noise)
+    return np.clip(img, 0, 1)
 
 
 def train_formatting(img):

@@ -31,7 +31,7 @@ class Autoencoder(nn.Module):
             name = 'leaky_relu' if self.activation == 'LeakyReLU' else 'relu'
             gain = torch.nn.init.calculate_gain(name)
 
-        inter_dim = 28 * 28 // 4
+        inter_dim = 28 * 28
         latent_dim = inter_dim // 4
         layers = [
             nn.Linear(28 * 28, inter_dim),
