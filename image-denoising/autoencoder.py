@@ -65,7 +65,6 @@ class Autoencoder(nn.Module):
 class NegLossScore(NeuralNetRegressor):
     steps = 0
     def partial_fit(self, *args, **kwargs):
-        
         super().partial_fit(*args, **kwargs)
         self.steps += 1
         
