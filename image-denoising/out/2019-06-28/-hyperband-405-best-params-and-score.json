@@ -1,0 +1,1 @@
+{"params": {"train_split": null, "optimizer__weight_decay": 0, "optimizer__nesterov": true, "optimizer__momentum": 0.14614614614614616, "optimizer__lr": 1.3856120184212044, "optimizer": "SGD", "module__init": "kaiming_uniform_", "module__activation": "PReLU", "batch_size": 64}, "score": -0.06338712573051453}
