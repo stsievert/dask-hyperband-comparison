@@ -1,0 +1,1 @@
+{"params": {"train_split": null, "optimizer__weight_decay": 0, "optimizer__nesterov": true, "optimizer__momentum": 0.9209209209209209, "optimizer__lr": 0.05131096827821533, "optimizer": "SGD", "module__init": "xavier_normal_", "module__activation": "PReLU", "batch_size": 32}, "score": -0.06327196955680847}
