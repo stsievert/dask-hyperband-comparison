@@ -1,0 +1,22 @@
+name: ray
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.7
+  - pip
+  - numpy
+  - scipy
+  - pandas
+  - scikit-learn
+  - dask
+  - distributed
+  - xgboost
+  - nb_conda_kernels
+  - lightgbm
+  - pip:
+    - ray
+    - tune-sklearn
+    - requests
+    - dask-ml
+    - keras
+    - tensorflow>=2.2
