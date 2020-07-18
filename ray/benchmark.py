@@ -25,8 +25,6 @@ from sklearn.utils import check_random_state
 
 import ray
 
-#  ray.init()
-
 
 class Timer(MLPClassifier):
     def __init__(
@@ -127,49 +125,6 @@ def _dataset():
     return (X_train, y_train), (X_test, y_test)
 
 
-def _get_chunks(n, chunksize):
-    leftover = n % chunksize
-    n_chunks = n // chunksize
-
-    chunks = [chunksize] * n_chunks
-    if leftover:
-        chunks.append(leftover)
-    return tuple(chunks)
-
-
-def test_get_chunksize():
-    N = [201, 49, 531, 5030]
-    Chunks = [48, 4, 10, 49]
-    for n, chunks in itertools.product(N, Chunks):
-        x = np.arange(n)
-        c = da.from_array(x, chunks=chunks).chunks[0]
-        c_hat = _get_chunks(n, chunks)
-        assert sum(c_hat) == n
-        assert c == c_hat
-
-
-def _get_even_chunks(arr: da.Array, n_chunks: int, eps: float = 0.1) -> da.Array:
-    chunk_size = len(arr) / n_chunks
-    min_chunks = int(chunk_size)
-    max_chunks = int(chunk_size) + 1
-    possible_chunksizes = range(min_chunks, max_chunks + 1)
-
-    possible_chunks = [
-        _get_chunks(len(arr), chunksize) for chunksize in possible_chunksizes
-    ]
-    diffs = [max(chunks) - min(chunks) for chunks in possible_chunks]
-    idx = np.argmin(diffs)
-    return possible_chunksizes[idx]
-
-
-def test_get_even_chunks():
-    x = np.random.uniform(size=1321)
-    for n_chunks in range(3, 12):
-        chunksize = _get_even_chunks(x, n_chunks)
-        y = da.from_array(x, chunksize)
-        assert len(y.chunks[0]) == n_chunks
-
-
 def tune_ray(clf, params, X_train, y_train, X_test, y_test, hparams=None):
     common = dict(random_state=42)
     split = ShuffleSplit(test_size=0.20, n_splits=1, random_state=42)
@@ -239,10 +194,11 @@ def tune_dask(clf, params, X_train, y_train, X_test, y_test, hparams=None):
 
     max_iter = n_params
     n_chunks = max_epochs / n_params
-    chunk_size = _get_even_chunks(y_train, n_chunks)
 
-    X_train = da.from_array(X_train, chunks=(chunk_size, -1))
-    y_train = da.from_array(y_train, chunks=chunk_size)
+    X_train = da.from_array(X_train).rechunk(n_chunks=(n_chunks, -1))
+    y_train = da.from_array(y_train).rechunk(n_chunks=n_chunks)
+
+    # Make sure early stopping is changed to adapt to n_chunks
     clf = clf.set_params(
         n_iter_no_change=int(n_iter_no_change * n_chunks) + 1,
         max_iter=int(max_iter * n_chunks) + 1
@@ -279,9 +235,6 @@ def tune_dask(clf, params, X_train, y_train, X_test, y_test, hparams=None):
 
 
 if __name__ == "__main__":
-    test_get_chunksize()
-    test_get_even_chunks()
-
     #  client = Client("localhost:7786")
     client = Client()
     ray.init()
@@ -290,7 +243,7 @@ if __name__ == "__main__":
     assert len(X_train) == 50_000
     assert len(X_test) == 10_000
 
-    n_params = 75
+    n_params = 50
     max_epochs = 200
     #  n_params = 10
     #  max_epochs = 20
@@ -304,7 +257,7 @@ if __name__ == "__main__":
         "hidden_layer_sizes": [(24,), (12,) * 2, (6,) * 4, (4,) * 6, (12, 6, 3, 3)],
         "alpha": loguniform(1e-6, 1e-3),
         "batch_size": [32, 64, 128, 256, 512],
-        "solver": ["sgd", "adam"],
+        "solver": ["adam"],
         "activation": ["relu"],
         "random_state": list(range(10_000)),
     }
@@ -321,7 +274,7 @@ if __name__ == "__main__":
     )
 
     print("\n" * 3, "sklearn" + "\n" * 3)
-    sklearn_search, sklearn_data = tune_sklearn(*args, hparams={"n_initial_parameters": n_params, "max_iter": max_epochs})
+    sklearn_search, sklearn_data = tune_sklearn(*args, hparams={"n_iter": n_params, "max_iter": max_epochs})
 
     data = [ray_data] + [dask_data] + [sklearn_data]
     df = pd.DataFrame(data)
