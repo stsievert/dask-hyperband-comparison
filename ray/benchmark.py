@@ -201,15 +201,11 @@ def tune_dask(clf, params, X_train, y_train, X_test, y_test, hparams=None):
     # Make sure early stopping is changed to adapt to n_chunks
     clf = clf.set_params(
         n_iter_no_change=int(n_iter_no_change * n_chunks) + 1,
-        max_iter=int(max_iter * n_chunks) + 1
+        max_iter=int(max_iter * n_chunks) + 1,
     )
 
     search = HyperbandSearchCV(
-        clf,
-        params,
-        aggressiveness=4,
-        max_iter=max_iter,
-        **common,
+        clf, params, aggressiveness=4, max_iter=max_iter, **common,
     )
 
     start = time()
@@ -274,7 +270,9 @@ if __name__ == "__main__":
     )
 
     print("\n" * 3, "sklearn" + "\n" * 3)
-    sklearn_search, sklearn_data = tune_sklearn(*args, hparams={"n_iter": n_params, "max_iter": max_epochs})
+    sklearn_search, sklearn_data = tune_sklearn(
+        *args, hparams={"n_iter": n_params, "max_iter": max_epochs}
+    )
 
     data = [ray_data] + [dask_data] + [sklearn_data]
     df = pd.DataFrame(data)
