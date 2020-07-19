@@ -2,8 +2,9 @@ from time import time
 
 from dask.distributed import Client
 from scipy.stats import loguniform
+from sklearn.base import clone
 
-from benchmark import run_search_and_write, Timer, dataset
+from benchmark import run_search_and_write, Timer, dataset, tune_dask
 
 (X_train, y_train), (X_test, y_test) = dataset()
 assert len(X_train) == 50_000
@@ -36,7 +37,18 @@ if __name__ == "__main__":
     client = Client("localhost:7786")
     client.upload_file("benchmark.py")
 
-    print("Starting search...")
-    __start = time()
-    run_search_and_write(clf, *args, n_params=n_params, max_epochs=max_epochs)
-    print("Time for search:", time() - __start)
+    tune_dask(
+        clone(clf),
+        params,
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+        max_epochs=max_epochs,
+        n_params=n_params,
+    )
+
+    #  print("Starting search...")
+    #  __start = time()
+    #  run_search_and_write(clf, *args, n_params=n_params, max_epochs=max_epochs)
+    #  print("Time for search:", time() - __start)

@@ -95,20 +95,24 @@ class Timer(MLPClassifier):
             super().partial_fit(X, y, classes, **kwargs)
         return self
 
-    def fit(self, X_train, y_train, X_test, y_test, **kwargs):
+    def fit(self, X_train, y_train, X_test, y_test):
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train, y_train, test_size=0.2, random_state=420
+        )
         for _ in range(self.max_iter):
             self.partial_fit(X_train, y_train, classes=np.unique(y_train))
-            self.score(X_test, y_test)
+            self.score(X_val, y_val, prefix="val_")
+        self.score(X_test, y_test, prefix="test_")
         return self
 
-    def score(self, X, y):
+    def score(self, X, y, prefix=""):
         self._init()
         score = super().score(X, y)
-
         self._score_calls += 1
+
         static = self.get_params()
         datum = {
-            "score": score,
+            f"{prefix}score": score,
             "time": time(),
             "pf_calls": self._pf_calls,
             "score_calls": self._score_calls,
@@ -157,8 +161,7 @@ def tune_ray(clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epo
     search.fit(X_train, y_train, classes=np.unique(y_train))
     fit_time = time() - start
 
-    y_hat = search.predict(X_test)
-    acc = (y_hat == y_test).sum() / len(y_hat)
+    acc = search.best_estimator_.score(X_test, y_test)
 
     data = {
         "score": acc,
@@ -173,12 +176,18 @@ def tune_ray(clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epo
 
 
 def tune_sklearn(
-    clf, params, X_train, y_train, X_test, y_test, max_epochs=-1, n_params=-1, fits_per_score=1,
+    clf,
+    params,
+    X_train,
+    y_train,
+    X_test,
+    y_test,
+    max_epochs=-1,
+    n_params=-1,
+    fits_per_score=1,
 ):
-    common = dict(random_state=42)
     clf = clone(clf).set_params(prefix="sklearn")
 
-    # Need IncrementalSearchCV to test on the validation set
     search = IncrementalSearchCV(
         clf,
         params,
@@ -186,16 +195,14 @@ def tune_sklearn(
         max_iter=max_epochs,
         fits_per_score=fits_per_score,
         decay_rate=None,
-        **common,
+        random_state=42,
     )
 
     start = time()
     search.fit(X_train, y_train, classes=np.unique(y_train))
     fit_time = time() - start
 
-    y_hat = search.predict(X_test)
-    acc = (y_hat == y_test).sum() / len(y_hat)
-    acc = acc.compute()
+    acc = search.best_estimator_.score(X_test, y_test)
 
     data = {
         "score": acc,
@@ -227,18 +234,15 @@ def tune_dask(
     y_train = da.from_array(y_train).rechunk(n_chunks=n_chunks)
     print(y_train.chunks)
 
-    search = HyperbandSearchCV(clf, params, max_iter=max_iter, **common)
+    search = HyperbandSearchCV(clf, params, max_iter=max_iter, aggressiveness=4, random_state=42)
     meta = search.metadata
-    print({k: meta[k] for k in ["n_models"]})
+    print({k: meta[k] for k in ["n_models", "partial_fit_calls"]})
 
     start = time()
-    search.fit(X_train, y_train, classes=classes, n_partial_fits=2)
+    search.fit(X_train, y_train, classes=classes)
     fit_time = time() - start
 
-    y_hat = search.predict(X_test)
-    acc = (y_hat == y_test).sum() / len(y_hat)
-    acc = acc.compute()
-
+    acc = search.best_estimator_.score(X_test, y_test)
     data = {
         "score": acc,
         "library": "dask",
@@ -248,6 +252,10 @@ def tune_dask(
         "fit_time": fit_time,
         "start_time": start,
     }
+    abs_path = "/Users/scott/Developer/stsievert/dask-hyperband-comparison/ray"
+    with open(f"{abs_path}/dask-final.json", "w") as f:
+        import json
+        json.dump(data, f)
     return search, data
 
 
@@ -269,17 +277,10 @@ def run_search_and_write(
     start = time()
     out = client.gather(futures)
     fit_time = time() - start
-
-    # Need IncrementalSearchCV to test on the validation set
-    #  search = IncrementalSearchCV(
-        #  clf,
-        #  params,
-        #  cv=split,
-        #  n_initial_parameters=n_params,
-        #  max_iter=max_epochs,
-        #  fits_per_score=1,
-        #  decay_rate=None,
-        #  random_state=42,
-    #  )
+    # total time: 1199.644 seconds
+    # time training: 1200 * 4 = 4800 (4 Dask workers)
+    # average time per model = time_training / 100 = 48
+    # average time per fit + score = time_per_model / 100 = 0.48 seconds
+    # latency = time_per_fit / (1 + 1.5) = 0.192
 
     return True
