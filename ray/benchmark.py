@@ -1,9 +1,4 @@
 import os
-#  os.environ["OMP_NUM_THREADS"] = "4" # export OMP_NUM_THREADS=4
-#  os.environ["OPENBLAS_NUM_THREADS"] = "4" # export OPENBLAS_NUM_THREADS=4
-#  os.environ["MKL_NUM_THREADS"] = "6" # export MKL_NUM_THREADS=6
-#  os.environ["VECLIB_MAXIMUM_THREADS"] = "4" # export VECLIB_MAXIMUM_THREADS=4
-#  os.environ["NUMEXPR_NUM_THREADS"] = "6" # export NUMEXPR_NUM_THREADS=6
 
 from sklearn.linear_model import SGDClassifier
 from sklearn.neural_network import MLPClassifier
@@ -19,15 +14,18 @@ from io import StringIO
 from pathlib import Path
 import itertools
 import dask.array as da
+from sklearn.datasets import make_circles
+from sklearn.utils import check_random_state
+import msgpack
+from sklearn.model_selection import ShuffleSplit, ParameterSampler
+from dask.distributed import get_client
 
 from dask.distributed import Client
 from sklearn.base import clone
 
-import msgpack
 from dask_ml.model_selection import HyperbandSearchCV, IncrementalSearchCV
-from sklearn.model_selection import RandomizedSearchCV, ShuffleSplit
-from sklearn.datasets import make_circles
-from sklearn.utils import check_random_state
+from tune_sklearn import TuneGridSearchCV
+
 
 def _hash(o):
     if isinstance(o, dict):
@@ -55,6 +53,8 @@ class Timer(MLPClassifier):
         max_iter=200,
         prefix="",
         tol=1e-4,
+        learning_rate_init=1e-3,
+        early_stopping=False,
     ):
         self.prefix = prefix
         super().__init__(
@@ -68,6 +68,8 @@ class Timer(MLPClassifier):
             random_state=random_state,
             max_iter=max_iter,
             tol=tol,
+            learning_rate_init=learning_rate_init,
+            early_stopping=early_stopping,
         )
 
     def _init(self):
@@ -82,7 +84,7 @@ class Timer(MLPClassifier):
 
     def _write(self):
         abs_path = "/Users/scott/Developer/stsievert/dask-hyperband-comparison/ray"
-        with open(f"{abs_path}/cv-results/{self.ident_}.msgpack", "wb") as f:
+        with open(f"{abs_path}/model-histories/{self.ident_}.msgpack", "wb") as f:
             msgpack.dump(self.history_, f)
 
     def partial_fit(self, X, y, classes, n_partial_fits=1, **kwargs):
@@ -93,9 +95,10 @@ class Timer(MLPClassifier):
             super().partial_fit(X, y, classes, **kwargs)
         return self
 
-    def fit(self, X, y, **kwargs):
+    def fit(self, X_train, y_train, X_test, y_test, **kwargs):
         for _ in range(self.max_iter):
-            self.partial_fit(X, y, **kwargs)
+            self.partial_fit(X_train, y_train, classes=np.unique(y_train))
+            self.score(X_test, y_test)
         return self
 
     def score(self, X, y):
@@ -119,7 +122,7 @@ class Timer(MLPClassifier):
         return score
 
 
-def _dataset():
+def dataset():
     X1, y1 = make_circles(n_samples=30_000, random_state=0, noise=0.04)
     X2, y2 = make_circles(n_samples=30_000, random_state=1, noise=0.04)
     X2[:, 0] += 0.6
@@ -139,7 +142,8 @@ def tune_ray(clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epo
     common = dict(random_state=42)
     split = ShuffleSplit(test_size=0.20, n_splits=1, random_state=42)
     clf = clone(clf).set_params(prefix="ray")
-    search = TuneSearchCV(
+    params = list(range(50))
+    search = TuneGridSearchCV(
         clf,
         params,
         cv=split,
@@ -156,25 +160,23 @@ def tune_ray(clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epo
     y_hat = search.predict(X_test)
     acc = (y_hat == y_test).sum() / len(y_hat)
 
-    return (
-        search,
-        {
-            "score": acc,
-            "library": "ray",
-            "accuracy": acc,
-            "best_score": search.best_score_,
-            "best_params": search.best_params_,
-            "fit_time": fit_time,
-            "start_time": start,
-        },
-    )
+    data = {
+        "score": acc,
+        "library": "ray",
+        "accuracy": acc,
+        "best_score": search.best_score_,
+        "best_params": search.best_params_,
+        "fit_time": fit_time,
+        "start_time": start,
+    }
+    return search, data
 
 
 def tune_sklearn(
-    clf, params, X_train, y_train, X_test, y_test, max_epochs=-1, n_params=-1
+    clf, params, X_train, y_train, X_test, y_test, max_epochs=-1, n_params=-1, fits_per_score=1,
 ):
     common = dict(random_state=42)
-    clf = clone(clf).set_params(prefix="sklearn", max_iter=max_epochs)
+    clf = clone(clf).set_params(prefix="sklearn")
 
     # Need IncrementalSearchCV to test on the validation set
     search = IncrementalSearchCV(
@@ -182,7 +184,7 @@ def tune_sklearn(
         params,
         n_initial_parameters=n_params,
         max_iter=max_epochs,
-        fits_per_score=5,
+        fits_per_score=fits_per_score,
         decay_rate=None,
         **common,
     )
@@ -195,25 +197,23 @@ def tune_sklearn(
     acc = (y_hat == y_test).sum() / len(y_hat)
     acc = acc.compute()
 
-    return (
-        search,
-        {
-            "score": acc,
-            "library": "sklearn",
-            "accuracy": acc,
-            "best_score": search.best_score_,
-            "best_params": search.best_params_,
-            "fit_time": fit_time,
-            "start_time": start,
-        },
-    )
+    data = {
+        "score": acc,
+        "library": "sklearn",
+        "accuracy": acc,
+        "best_score": search.best_score_,
+        "best_params": search.best_params_,
+        "fit_time": fit_time,
+        "start_time": start,
+    }
+    return search, data
 
 
 def tune_dask(
     clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epochs=-1
 ):
     common = dict(random_state=42)
-    clf = clone(clf).set_params(prefix="dask", max_iter=1_000_000)
+    clf = clone(clf).set_params(prefix="dask")
     classes = np.unique(y_train)
 
     n_chunks = max(1, n_params / max_epochs)
@@ -239,76 +239,47 @@ def tune_dask(
     acc = (y_hat == y_test).sum() / len(y_hat)
     acc = acc.compute()
 
-    return (
-        search,
-        {
-            "score": acc,
-            "library": "dask",
-            "accuracy": acc,
-            "best_score": search.best_score_,
-            "best_params": search.best_params_,
-            "fit_time": fit_time,
-            "start_time": start,
-        },
-    )
-
-
-if __name__ == "__main__":
-    # $ dask-worker --nprocs 4 localhost:7786
-    client = Client("localhost:7786")
-    #  $ OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 MKL_NUM_THREADS=2 VECLIB_MAXIMUM_THREADS=2 NUMEXPR_NUM_THREADS=2 ray start --num-cpus 4 --address localhost:6379
-    import ray
-    ray.init(num_cpus=4)
-    print("done with ray init")
-    from tune_sklearn import TuneSearchCV
-
-    (X_train, y_train), (X_test, y_test) = _dataset()
-    assert len(X_train) == 50_000
-    assert len(X_test) == 10_000
-
-    n_params = 50
-    max_epochs = 100
-    #  n_params = 10
-    #  max_epochs = 20
-
-    clf = Timer(max_iter=max_epochs, tol=-1, n_iter_no_change=max_epochs * 4)
-
-    params = {
-        "hidden_layer_sizes": [(24,), (12,) * 2, (6,) * 4, (4,) * 6, (12, 6, 3, 3)],
-        "activation": ["relu", "logistic", "tanh"],
-        "alpha": loguniform(1e-6, 1e-3),
-        "batch_size": [32, 64, 128, 256, 512],
-        "solver": ["adam"],
-        "random_state": list(range(10_000)),
+    data = {
+        "score": acc,
+        "library": "dask",
+        "accuracy": acc,
+        "best_score": search.best_score_,
+        "best_params": search.best_params_,
+        "fit_time": fit_time,
+        "start_time": start,
     }
+    return search, data
 
-    args = (clf, params, X_train, y_train, X_test, y_test)
 
-    print("\n" * 3, "dask" + "\n" * 3)
-    __start = time()
-    dask_search, dask_data = tune_dask(*args, n_params=n_params, max_epochs=max_epochs)
-    print("Time for dask:", time() - __start)
+def run_search_and_write(
+    clf, params, X_train, y_train, X_test, y_test, max_epochs=-1, n_params=-1
+):
+    clf = clone(clf).set_params(prefix="")
+    client = get_client()
 
-    print("\n" * 3, "ray" + "\n" * 3)
-    __start = time()
-    ray_search, ray_data = tune_ray(*args, n_params=n_params, max_epochs=max_epochs)
-    print("Time for ray:", time() - __start)
+    futures = []
+    params = ParameterSampler(params, n_params, random_state=42)
 
-    print("\n" * 3, "sklearn" + "\n" * 3)
-    __start = time()
-    sklearn_search, sklearn_data = tune_sklearn(
-        *args, n_params=n_params, max_epochs=max_epochs
-    )
-    print("Time for sklearn:", time() - __start)
+    args = client.scatter((X_train, y_train, X_test, y_test))
+    for param in params:
+        model = clone(clf).set_params(**param)
+        future = client.submit(model.fit, *args)
+        futures.append(future)
 
-    data = [ray_data] + [dask_data] + [sklearn_data]
-    df = pd.DataFrame(data)
-    df.to_csv("out/final.csv", index=False)
+    start = time()
+    out = client.gather(futures)
+    fit_time = time() - start
 
-    for library, search in [
-        ("sklearn", sklearn_search),
-        ("ray", ray_search),
-        ("dask", dask_search),
-    ]:
-        cv_res = pd.DataFrame(search.cv_results_)
-        cv_res.to_csv(f"out/{library}-cv-results.csv", index=False)
+    # Need IncrementalSearchCV to test on the validation set
+    #  search = IncrementalSearchCV(
+        #  clf,
+        #  params,
+        #  cv=split,
+        #  n_initial_parameters=n_params,
+        #  max_iter=max_epochs,
+        #  fits_per_score=1,
+        #  decay_rate=None,
+        #  random_state=42,
+    #  )
+
+    return True
