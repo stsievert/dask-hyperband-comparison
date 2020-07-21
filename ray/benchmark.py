@@ -14,18 +14,18 @@ from io import StringIO
 from pathlib import Path
 import itertools
 import dask.array as da
-from sklearn.datasets import make_circles
+from sklearn.datasets import make_circles, make_moons, make_s_curve, make_checkerboard
 from sklearn.utils import check_random_state
 import msgpack
 from sklearn.model_selection import ShuffleSplit, ParameterSampler
-from dask.distributed import get_client
+from dask.distributed import get_client, LocalCluster
 
 from dask.distributed import Client
 from sklearn.base import clone
 
 from dask_ml.model_selection import HyperbandSearchCV, IncrementalSearchCV
-from tune_sklearn import TuneGridSearchCV
 
+WDIR = "/mnt/ws/home/ssievert/ray"
 
 def _hash(o):
     if isinstance(o, dict):
@@ -83,27 +83,20 @@ class Timer(MLPClassifier):
             self.ident_ = self.prefix + "-" + str(_hash(params))
 
     def _write(self):
-        abs_path = "/Users/scott/Developer/stsievert/dask-hyperband-comparison/ray"
-        with open(f"{abs_path}/model-histories/{self.ident_}.msgpack", "wb") as f:
+        with open(f"{WDIR}/model-histories/{self.ident_}.msgpack", "wb") as f:
             msgpack.dump(self.history_, f)
 
-    def partial_fit(self, X, y, classes, n_partial_fits=1, **kwargs):
+    def partial_fit(self, X, y, classes=None, n_partial_fits=1, **kwargs):
         self._init()
         for _ in range(n_partial_fits):
             self._num_eg += len(X)
             self._pf_calls += 1
-            super().partial_fit(X, y, classes, **kwargs)
+            super().partial_fit(X, y, classes=classes, **kwargs)
         return self
 
-    def fit(self, X_train, y_train, X_test, y_test):
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_train, y_train, test_size=0.2, random_state=420
-        )
-        for _ in range(self.max_iter):
-            self.partial_fit(X_train, y_train, classes=np.unique(y_train))
-            self.score(X_val, y_val, prefix="val_")
-        self.score(X_test, y_test, prefix="test_")
-        return self
+    def fit(self, X, y):
+        assert X.shape[0] == 50_000, "X is entire training set"
+        return super().fit(X, y)
 
     def score(self, X, y, prefix=""):
         self._init()
@@ -127,15 +120,23 @@ class Timer(MLPClassifier):
 
 
 def dataset():
-    X1, y1 = make_circles(n_samples=30_000, random_state=0, noise=0.04)
-    X2, y2 = make_circles(n_samples=30_000, random_state=1, noise=0.04)
+    #  X1, y1 = make_circles(n_samples=30_000, random_state=0, noise=0.08)
+    #  X2, y2 = make_circles(n_samples=30_000, random_state=1, noise=0.08)
+    #  X2[:, 0] += 0.6
+
+    X1, y1 = make_circles(n_samples=30_000, random_state=0, factor=0.8, noise=0.10)
+    X2, y2 = make_circles(n_samples=30_000, random_state=1, noise=0.08)
+
     X2[:, 0] += 0.6
+    X2[:, 1] += 0.6
+
     X_info = np.concatenate((X1, X2))
     y = np.concatenate((y1, y2 + 2))
 
     rng = check_random_state(42)
-    random_feats = rng.uniform(-1, 1, size=(X_info.shape[0], 4))
+    random_feats = rng.uniform(X_info.min(), X_info.max(), size=(X_info.shape[0], 6))
     X = np.hstack((X_info, random_feats))
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=int(10e3), random_state=42
     )
@@ -146,19 +147,19 @@ def tune_ray(clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epo
     common = dict(random_state=42)
     split = ShuffleSplit(test_size=0.20, n_splits=1, random_state=42)
     clf = clone(clf).set_params(prefix="ray")
-    params = list(range(50))
-    search = TuneGridSearchCV(
+    from tune_sklearn import TuneSearchCV
+    search = TuneSearchCV(
         clf,
         params,
         cv=split,
         early_stopping=True,
-        n_iter=n_params,
         max_iters=max_epochs,
-        **common,
+        n_iter=n_params,
+        random_state=42,
     )
 
     start = time()
-    search.fit(X_train, y_train, classes=np.unique(y_train))
+    search.fit(X_train, y_train)#, classes=np.unique(y_train))
     fit_time = time() - start
 
     acc = search.best_estimator_.score(X_test, y_test)
@@ -175,7 +176,7 @@ def tune_ray(clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epo
     return search, data
 
 
-def tune_sklearn(
+def tune_scikitlearn(
     clf,
     params,
     X_train,
@@ -184,7 +185,7 @@ def tune_sklearn(
     y_test,
     max_epochs=-1,
     n_params=-1,
-    fits_per_score=1,
+    fits_per_score=5,
 ):
     clf = clone(clf).set_params(prefix="sklearn")
 
@@ -196,6 +197,7 @@ def tune_sklearn(
         fits_per_score=fits_per_score,
         decay_rate=None,
         random_state=42,
+        test_size=0.2,
     )
 
     start = time()
@@ -219,22 +221,21 @@ def tune_sklearn(
 def tune_dask(
     clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epochs=-1
 ):
-    common = dict(random_state=42)
     clf = clone(clf).set_params(prefix="dask")
     classes = np.unique(y_train)
 
-    n_chunks = max(1, n_params / max_epochs)
+    chunk_size = len(X_train) * max_epochs // n_params
     max_iter = n_params
 
     #  chunk_size = len(X_train) / n_chunks = len(X_train) * max_epochs / n_params
 
-    print(f"max_iter, n_chunks = {max_iter}, {n_chunks}")
+    print(f"max_iter, chunk_size = {max_iter}, {chunk_size}")
     print(f"n_params = {n_params}")
-    X_train = da.from_array(X_train).rechunk(n_chunks=(n_chunks, -1))
-    y_train = da.from_array(y_train).rechunk(n_chunks=n_chunks)
+    X_train = da.from_array(X_train).rechunk(chunks=(chunk_size, -1))
+    y_train = da.from_array(y_train).rechunk(chunks=chunk_size)
     print(y_train.chunks)
 
-    search = HyperbandSearchCV(clf, params, max_iter=max_iter, aggressiveness=4, random_state=42)
+    search = HyperbandSearchCV(clf, params, max_iter=max_iter, aggressiveness=4, random_state=42, test_size=0.2)
     meta = search.metadata
     print({k: meta[k] for k in ["n_models", "partial_fit_calls"]})
 
@@ -252,8 +253,7 @@ def tune_dask(
         "fit_time": fit_time,
         "start_time": start,
     }
-    abs_path = "/Users/scott/Developer/stsievert/dask-hyperband-comparison/ray"
-    with open(f"{abs_path}/dask-final.json", "w") as f:
+    with open(f"{WDIR}/dask-final.json", "w") as f:
         import json
         json.dump(data, f)
     return search, data
@@ -284,3 +284,62 @@ def run_search_and_write(
     # latency = time_per_fit / (1 + 1.5) = 0.192
 
     return True
+
+def get_meta():
+    (X_train, y_train), (X_test, y_test) = dataset()
+    assert len(X_train) == 50_000
+    assert len(X_test) == 10_000
+
+    #  n_params = 4
+    #  max_epochs = 10
+
+    n_params = 100
+    max_epochs = 100
+
+    clf = Timer(max_iter=max_epochs, tol=-1, n_iter_no_change=max_epochs * 4)
+
+    # Grid search requires: 5 x 3 x (3 * 3) x 5 x (2 * 3) = 4050
+    # Let's search over 100 parameters
+
+    params = {
+        "hidden_layer_sizes": [(24,), (12,) * 2, (6,) * 4, (4,) * 6, (12, 6, 3, 3)],  # 5
+        "activation": ["relu", "logistic", "tanh"],  # 3
+        "alpha": loguniform(1e-6, 1e-3),  # 3 orders
+        "batch_size": [32, 64, 128, 256, 512],  # 5
+        "learning_rate_init": loguniform(1e-4, 1e-2),  # 2 orders
+        "solver": ["adam"],
+        "random_state": list(range(10_000)),
+    }
+
+    args = (params, X_train, y_train, X_test, y_test)
+    return clf, args, {"n_params": n_params, "max_epochs": max_epochs}
+
+
+def main():
+    clf, args, common = get_meta()
+
+    from dask.distributed import LocalCluster, Client
+    # dask-worker --nprocs 8 localhost:8786
+    client = Client("localhost:8786")
+
+    import ray
+    # ray start --num-cpus 8 --head
+    ray.init(address='auto', redis_password='5241590000000000')
+
+    from pprint import pprint
+    sklearn_search, sklearn_data = tune_scikitlearn(clf, *args, **common)
+    pprint(sklearn_data)
+    dask_search, dask_data = tune_dask(clf, *args, **common)
+    pprint(dask_data)
+    ray_search, ray_data = tune_ray(clf, *args, **common)
+    pprint(ray_data)
+
+    df = pd.DataFrame([dask_data, ray_data, sklearn_data])
+    df.to_csv("out/final.csv")
+
+    for name, est in [("dask", dask_search), ("sklearn", sklearn_search), ("ray", ray_search)]:
+        with open(f"out/{name}.pkl", "wb") as f:
+            pickle.dump(est, f)
+
+if __name__ == "__main__":
+    main()

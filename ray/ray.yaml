@@ -4,19 +4,20 @@ channels:
 dependencies:
   - python>=3.7
   - pip
-  - numpy
+  - numpy>=1.16
   - scipy
   - pandas
-  - scikit-learn
+  - scikit-learn>=0.23
   - dask
   - distributed
   - xgboost
   - nb_conda_kernels
   - lightgbm
   - pip:
-    - ray
+    - ray[tune]
+    - scikit-optimize
     - tune-sklearn
     - requests
-    - dask-ml
     - keras
     - tensorflow>=2.2
+    - git+https://github.com/stsievert/dask-ml.git@ms-priority
