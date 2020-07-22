@@ -1,32 +1,31 @@
+import itertools
 import os
-from time import sleep
-
-from sklearn.linear_model import SGDClassifier
-from sklearn.neural_network import MLPClassifier
-from sklearn.linear_model import SGDClassifier
-from sklearn import datasets
-from sklearn.model_selection import train_test_split
-import numpy as np
-from scipy.stats import loguniform, uniform
-from time import time
-import pandas as pd
-from hashlib import sha256
 import pickle
+from hashlib import sha256
 from io import StringIO
 from pathlib import Path
-import itertools
+from pprint import pprint
+from time import sleep, time
+
 import dask.array as da
-from sklearn.datasets import fetch_covtype
-from sklearn.utils import check_random_state
 import msgpack
-from sklearn.model_selection import ShuffleSplit, ParameterSampler
-from dask.distributed import get_client, LocalCluster
-
-from dask.distributed import Client
-from sklearn.base import clone, BaseEstimator
-from sklearn.model_selection import RandomizedSearchCV
-
+import numpy as np
+import pandas as pd
+from dask.distributed import Client, LocalCluster, get_client
 from dask_ml.model_selection import HyperbandSearchCV, IncrementalSearchCV
+from scipy.stats import loguniform, uniform
+from sklearn import datasets
+from sklearn.base import BaseEstimator, clone
+from sklearn.datasets import fetch_covtype
+from sklearn.linear_model import SGDClassifier
+from sklearn.model_selection import (
+    ParameterSampler,
+    RandomizedSearchCV,
+    ShuffleSplit,
+    train_test_split,
+)
+from sklearn.neural_network import MLPClassifier
+from sklearn.utils import check_random_state
 
 WDIR = "/Users/scott/Developer/stsievert/dask-hyperband-comparison/ray"
 
@@ -127,6 +126,9 @@ def tune_ray(
         "library": "ray",
         "fit_time": fit_time,
         "start_time": start,
+        "n_params": n_params,
+        "n_jobs": n_jobs,
+        "max_epochs": max_epochs,
     }
     return search, data
 
@@ -166,6 +168,9 @@ def tune_scikitlearn(
         "best_params": search.best_params_,
         "fit_time": fit_time,
         "start_time": start,
+        "n_params": n_params,
+        "n_jobs": n_jobs,
+        "max_epochs": max_epochs,
     }
     return search, data
 
@@ -185,10 +190,15 @@ def tune_dask(
     print(y_train.chunks)
 
     search = HyperbandSearchCV(
-        clf, params, max_iter=max_iter, random_state=42, test_size=0.2,
+        clf,
+        params,
+        max_iter=max_iter,
+        random_state=42,
+        test_size=0.2,
+        aggressiveness=4,
     )
     meta = search.metadata
-    print({k: meta[k] for k in ["n_models", "partial_fit_calls"]})
+    hmeta = {k: meta[k] for k in ["n_models", "partial_fit_calls"]}
 
     start = time()
     search.fit(X_train, y_train)
@@ -200,22 +210,26 @@ def tune_dask(
         "best_params": search.best_params_,
         "fit_time": fit_time,
         "start_time": start,
+        "n_params": n_params,
+        "n_jobs": n_jobs,
+        "max_epochs": max_epochs,
+        **hmeta,
     }
     return search, data
 
 
-def get_meta():
+def get_meta(n_jobs):
     # total time: 1199.644 seconds
     # time training: 1200 * 4 = 4800 (4 Dask workers)
     # average time per model = time_training / 100 = 48
     # average time per fit + score = time_per_model / 100 = 0.48 seconds
     # latency = time_per_fit / (1 + 1.5) = 0.192
 
-    N = 50_000
-    X = np.random.uniform(size=(N, 784))
-    y = np.random.choice(2, size=N)
+    N = 70_000
+    X = np.random.choice(255, size=(N, 784)).astype("uint8")
+    y = np.random.choice(2, size=N).astype("uint8")
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
+        X, y, test_size=10_000, random_state=42
     )
 
     #  n_params = 4
@@ -223,9 +237,7 @@ def get_meta():
     n_params = 100
     max_epochs = 100
 
-    n_jobs = 8
-
-    clf = ConstantFunction(latency=0.1 / 50e3, n_jobs=n_jobs)
+    clf = ConstantFunction(latency=0.1 / 50e3, n_jobs=n_jobs, max_iter=max_epochs)
 
     params = {"value": uniform(0, 1)}
 
@@ -233,28 +245,14 @@ def get_meta():
     return clf, args, {"n_params": n_params, "max_epochs": max_epochs, "n_jobs": n_jobs}
 
 
-def main():
-    clf, args, meta = get_meta()
-
-    from dask.distributed import LocalCluster, Client
-
-    #  cluster = LocalCluster(n_workers=meta["n_jobs"])
-    #  client = Client(cluster)
-    client = Client("localhost:8786")
-    print("Dask initialized")
-
-    import ray
-
-    #  ray.init(num_cpus=meta["n_jobs"])
-    ray.init(address='auto', redis_password='5241590000000000')
-    print("Ray initialized")
-
-    from pprint import pprint
+def main(n_jobs):
+    clf, args, meta = get_meta(n_jobs)
 
     sklearn_search, sklearn_data = tune_scikitlearn(clf, *args, **meta)
     pprint(sklearn_data)
     dask_search, dask_data = tune_dask(clf, *args, **meta)
     pprint(dask_data)
+
     ray_search, ray_data = tune_ray(clf, *args, **meta)
     pprint(ray_data)
 
@@ -271,4 +269,25 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    n_jobs = sys.argv[1]
+    ans = input(f"n_jobs = {n_jobs}. Continue? ")
+    if ans.lower() != "y":
+        print("Okay, ending")
+        sys.exit(1)
+    n_jobs = int(n_jobs)
+
+    import ray
+
+    #  ray.init(num_cpus=meta["n_jobs"])
+    ray.init(address="auto", redis_password="5241590000000000")
+    print("Ray initialized")
+
+    cluster = LocalCluster(n_workers=n_jobs, threads_per_worker=1)
+    client = Client(cluster)
+    #  client = Client("localhost:8786")
+    print("Dask initialized")
+
+    #  for n_jobs in [1, 2, 4, 8, 16, 24, 32]:
+    cluster.scale(n_jobs)
+    main(n_jobs)
