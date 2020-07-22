@@ -1,7 +1,9 @@
 import os
+from time import sleep
 
 from sklearn.linear_model import SGDClassifier
 from sklearn.neural_network import MLPClassifier
+from sklearn.linear_model import SGDClassifier
 from sklearn import datasets
 from sklearn.model_selection import train_test_split
 import numpy as np
@@ -14,18 +16,20 @@ from io import StringIO
 from pathlib import Path
 import itertools
 import dask.array as da
-from sklearn.datasets import make_circles, make_moons, make_s_curve, make_checkerboard
+from sklearn.datasets import fetch_covtype
 from sklearn.utils import check_random_state
 import msgpack
 from sklearn.model_selection import ShuffleSplit, ParameterSampler
 from dask.distributed import get_client, LocalCluster
 
 from dask.distributed import Client
-from sklearn.base import clone
+from sklearn.base import clone, BaseEstimator
+from sklearn.model_selection import RandomizedSearchCV
 
 from dask_ml.model_selection import HyperbandSearchCV, IncrementalSearchCV
 
-WDIR = "/mnt/ws/home/ssievert/ray"
+WDIR = "/Users/scott/Developer/stsievert/dask-hyperband-comparison/ray"
+
 
 def _hash(o):
     if isinstance(o, dict):
@@ -39,38 +43,14 @@ def _hash(o):
     return m.hexdigest()
 
 
-class Timer(MLPClassifier):
-    def __init__(
-        self,
-        hidden_layer_sizes=None,
-        alpha=1e-4,
-        batch_size=32,
-        momentum=0.9,
-        n_iter_no_change=20,
-        solver="sgd",
-        activation="relu",
-        random_state=None,
-        max_iter=200,
-        prefix="",
-        tol=1e-4,
-        learning_rate_init=1e-3,
-        early_stopping=False,
-    ):
+class ConstantFunction(BaseEstimator):
+    def __init__(self, value=0, max_iter=100, latency=0.1, n_jobs=1, prefix=""):
+        self.value = value
+        self.max_iter = max_iter
+        self.latency = latency
+        self.n_jobs = n_jobs
         self.prefix = prefix
-        super().__init__(
-            hidden_layer_sizes=hidden_layer_sizes,
-            alpha=alpha,
-            batch_size=batch_size,
-            momentum=momentum,
-            n_iter_no_change=n_iter_no_change,
-            solver=solver,
-            activation=activation,
-            random_state=random_state,
-            max_iter=max_iter,
-            tol=tol,
-            learning_rate_init=learning_rate_init,
-            early_stopping=early_stopping,
-        )
+        super().__init__()
 
     def _init(self):
         if not hasattr(self, "initialized_"):
@@ -83,25 +63,25 @@ class Timer(MLPClassifier):
             self.ident_ = self.prefix + "-" + str(_hash(params))
 
     def _write(self):
-        with open(f"{WDIR}/model-histories/{self.ident_}.msgpack", "wb") as f:
-            msgpack.dump(self.history_, f)
+        return
+        # with open(f"{WDIR}/model-histories/{self.ident_}.msgpack", "wb") as f:
+        #     msgpack.dump(self.history_, f)
 
-    def partial_fit(self, X, y, classes=None, n_partial_fits=1, **kwargs):
+    def partial_fit(self, X, y, _=None):
         self._init()
-        for _ in range(n_partial_fits):
-            self._num_eg += len(X)
-            self._pf_calls += 1
-            super().partial_fit(X, y, classes=classes, **kwargs)
+        sleep(self.latency * 1.5 * len(X))
         return self
 
-    def fit(self, X, y):
-        assert X.shape[0] == 50_000, "X is entire training set"
-        return super().fit(X, y)
+    def fit(self, X, y, _=None):
+        for _ in range(self.max_iter):
+            self.partial_fit(X, y)
+        return self
 
     def score(self, X, y, prefix=""):
         self._init()
-        score = super().score(X, y)
+        sleep(self.latency * 1.0 * len(X))
         self._score_calls += 1
+        score = self.value
 
         static = self.get_params()
         datum = {
@@ -119,35 +99,14 @@ class Timer(MLPClassifier):
         return score
 
 
-def dataset():
-    #  X1, y1 = make_circles(n_samples=30_000, random_state=0, noise=0.08)
-    #  X2, y2 = make_circles(n_samples=30_000, random_state=1, noise=0.08)
-    #  X2[:, 0] += 0.6
-
-    X1, y1 = make_circles(n_samples=30_000, random_state=0, factor=0.8, noise=0.10)
-    X2, y2 = make_circles(n_samples=30_000, random_state=1, noise=0.08)
-
-    X2[:, 0] += 0.6
-    X2[:, 1] += 0.6
-
-    X_info = np.concatenate((X1, X2))
-    y = np.concatenate((y1, y2 + 2))
-
-    rng = check_random_state(42)
-    random_feats = rng.uniform(X_info.min(), X_info.max(), size=(X_info.shape[0], 6))
-    X = np.hstack((X_info, random_feats))
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=int(10e3), random_state=42
-    )
-    return (X_train, y_train), (X_test, y_test)
-
-
-def tune_ray(clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epochs=-1):
+def tune_ray(
+    clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epochs=-1, n_jobs=4
+):
     common = dict(random_state=42)
     split = ShuffleSplit(test_size=0.20, n_splits=1, random_state=42)
     clf = clone(clf).set_params(prefix="ray")
     from tune_sklearn import TuneSearchCV
+
     search = TuneSearchCV(
         clf,
         params,
@@ -156,20 +115,16 @@ def tune_ray(clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epo
         max_iters=max_epochs,
         n_iter=n_params,
         random_state=42,
+        refit=False,
+        n_jobs=n_jobs,
     )
 
     start = time()
-    search.fit(X_train, y_train)#, classes=np.unique(y_train))
+    search.fit(X_train, y_train)
     fit_time = time() - start
 
-    acc = search.best_estimator_.score(X_test, y_test)
-
     data = {
-        "score": acc,
         "library": "ray",
-        "accuracy": acc,
-        "best_score": search.best_score_,
-        "best_params": search.best_params_,
         "fit_time": fit_time,
         "start_time": start,
     }
@@ -185,31 +140,28 @@ def tune_scikitlearn(
     y_test,
     max_epochs=-1,
     n_params=-1,
-    fits_per_score=5,
+    fits_per_score=1,
+    n_jobs=4,
 ):
     clf = clone(clf).set_params(prefix="sklearn")
 
-    search = IncrementalSearchCV(
+    split = ShuffleSplit(test_size=0.20, n_splits=1, random_state=42)
+    search = RandomizedSearchCV(
         clf,
         params,
-        n_initial_parameters=n_params,
-        max_iter=max_epochs,
-        fits_per_score=fits_per_score,
-        decay_rate=None,
+        cv=split,
+        n_iter=n_params,
         random_state=42,
-        test_size=0.2,
+        n_jobs=n_jobs,
+        refit=False,
     )
 
     start = time()
-    search.fit(X_train, y_train, classes=np.unique(y_train))
+    search.fit(X_train, y_train)
     fit_time = time() - start
 
-    acc = search.best_estimator_.score(X_test, y_test)
-
     data = {
-        "score": acc,
         "library": "sklearn",
-        "accuracy": acc,
         "best_score": search.best_score_,
         "best_params": search.best_params_,
         "fit_time": fit_time,
@@ -219,15 +171,12 @@ def tune_scikitlearn(
 
 
 def tune_dask(
-    clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epochs=-1
+    clf, params, X_train, y_train, X_test, y_test, n_params=-1, max_epochs=-1, n_jobs=4
 ):
     clf = clone(clf).set_params(prefix="dask")
-    classes = np.unique(y_train)
 
     chunk_size = len(X_train) * max_epochs // n_params
     max_iter = n_params
-
-    #  chunk_size = len(X_train) / n_chunks = len(X_train) * max_epochs / n_params
 
     print(f"max_iter, chunk_size = {max_iter}, {chunk_size}")
     print(f"n_params = {n_params}")
@@ -235,111 +184,91 @@ def tune_dask(
     y_train = da.from_array(y_train).rechunk(chunks=chunk_size)
     print(y_train.chunks)
 
-    search = HyperbandSearchCV(clf, params, max_iter=max_iter, aggressiveness=4, random_state=42, test_size=0.2)
+    search = HyperbandSearchCV(
+        clf, params, max_iter=max_iter, random_state=42, test_size=0.2,
+    )
     meta = search.metadata
     print({k: meta[k] for k in ["n_models", "partial_fit_calls"]})
 
     start = time()
-    search.fit(X_train, y_train, classes=classes)
+    search.fit(X_train, y_train)
     fit_time = time() - start
 
-    acc = search.best_estimator_.score(X_test, y_test)
     data = {
-        "score": acc,
         "library": "dask",
-        "accuracy": acc,
         "best_score": search.best_score_,
         "best_params": search.best_params_,
         "fit_time": fit_time,
         "start_time": start,
     }
-    with open(f"{WDIR}/dask-final.json", "w") as f:
-        import json
-        json.dump(data, f)
     return search, data
 
 
-def run_search_and_write(
-    clf, params, X_train, y_train, X_test, y_test, max_epochs=-1, n_params=-1
-):
-    clf = clone(clf).set_params(prefix="")
-    client = get_client()
-
-    futures = []
-    params = ParameterSampler(params, n_params, random_state=42)
-
-    args = client.scatter((X_train, y_train, X_test, y_test))
-    for param in params:
-        model = clone(clf).set_params(**param)
-        future = client.submit(model.fit, *args)
-        futures.append(future)
-
-    start = time()
-    out = client.gather(futures)
-    fit_time = time() - start
+def get_meta():
     # total time: 1199.644 seconds
     # time training: 1200 * 4 = 4800 (4 Dask workers)
     # average time per model = time_training / 100 = 48
     # average time per fit + score = time_per_model / 100 = 0.48 seconds
     # latency = time_per_fit / (1 + 1.5) = 0.192
 
-    return True
-
-def get_meta():
-    (X_train, y_train), (X_test, y_test) = dataset()
-    assert len(X_train) == 50_000
-    assert len(X_test) == 10_000
+    N = 50_000
+    X = np.random.uniform(size=(N, 784))
+    y = np.random.choice(2, size=N)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
 
     #  n_params = 4
     #  max_epochs = 10
-
     n_params = 100
     max_epochs = 100
 
-    clf = Timer(max_iter=max_epochs, tol=-1, n_iter_no_change=max_epochs * 4)
+    n_jobs = 8
 
-    # Grid search requires: 5 x 3 x (3 * 3) x 5 x (2 * 3) = 4050
-    # Let's search over 100 parameters
+    clf = ConstantFunction(latency=0.1 / 50e3, n_jobs=n_jobs)
 
-    params = {
-        "hidden_layer_sizes": [(24,), (12,) * 2, (6,) * 4, (4,) * 6, (12, 6, 3, 3)],  # 5
-        "activation": ["relu", "logistic", "tanh"],  # 3
-        "alpha": loguniform(1e-6, 1e-3),  # 3 orders
-        "batch_size": [32, 64, 128, 256, 512],  # 5
-        "learning_rate_init": loguniform(1e-4, 1e-2),  # 2 orders
-        "solver": ["adam"],
-        "random_state": list(range(10_000)),
-    }
+    params = {"value": uniform(0, 1)}
 
     args = (params, X_train, y_train, X_test, y_test)
-    return clf, args, {"n_params": n_params, "max_epochs": max_epochs}
+    return clf, args, {"n_params": n_params, "max_epochs": max_epochs, "n_jobs": n_jobs}
 
 
 def main():
-    clf, args, common = get_meta()
+    clf, args, meta = get_meta()
 
     from dask.distributed import LocalCluster, Client
-    # dask-worker --nprocs 8 localhost:8786
+
+    #  cluster = LocalCluster(n_workers=meta["n_jobs"])
+    #  client = Client(cluster)
     client = Client("localhost:8786")
+    print("Dask initialized")
 
     import ray
-    # ray start --num-cpus 8 --head
+
+    #  ray.init(num_cpus=meta["n_jobs"])
     ray.init(address='auto', redis_password='5241590000000000')
+    print("Ray initialized")
 
     from pprint import pprint
-    sklearn_search, sklearn_data = tune_scikitlearn(clf, *args, **common)
+
+    sklearn_search, sklearn_data = tune_scikitlearn(clf, *args, **meta)
     pprint(sklearn_data)
-    dask_search, dask_data = tune_dask(clf, *args, **common)
+    dask_search, dask_data = tune_dask(clf, *args, **meta)
     pprint(dask_data)
-    ray_search, ray_data = tune_ray(clf, *args, **common)
+    ray_search, ray_data = tune_ray(clf, *args, **meta)
     pprint(ray_data)
 
     df = pd.DataFrame([dask_data, ray_data, sklearn_data])
-    df.to_csv("out/final.csv")
+    df.to_csv(f"out/final-{meta['n_jobs']}.csv")
 
-    for name, est in [("dask", dask_search), ("sklearn", sklearn_search), ("ray", ray_search)]:
-        with open(f"out/{name}.pkl", "wb") as f:
+    for name, est in [
+        ("dask", dask_search),
+        ("sklearn", sklearn_search),
+        ("ray", ray_search),
+    ]:
+        with open(f"out/{name}-{meta['n_jobs']}.pkl", "wb") as f:
             pickle.dump(est, f)
+
 
 if __name__ == "__main__":
     main()
