@@ -7,5 +7,6 @@ down:
 	scp $(HOST):~/ray/out.zip .
 
 clean:
-	rm model-histories/*
-	rm out/*
+	rm -f model-histories/*
+	rm -f out/*
+	rm -f out.zip
