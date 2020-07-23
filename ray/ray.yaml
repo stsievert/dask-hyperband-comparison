@@ -1,0 +1,23 @@
+name: ray
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.7
+  - pip
+  - numpy>=1.16
+  - scipy
+  - pandas
+  - scikit-learn>=0.23
+  - dask
+  - distributed
+  - xgboost
+  - nb_conda_kernels
+  - lightgbm
+  - pip:
+    - ray[tune]
+    - scikit-optimize
+    - tune-sklearn
+    - requests
+    - keras
+    - tensorflow>=2.2
+    - git+https://github.com/stsievert/dask-ml.git@ms-priority
