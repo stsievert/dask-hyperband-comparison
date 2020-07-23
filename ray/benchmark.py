@@ -68,7 +68,7 @@ class ConstantFunction(BaseEstimator):
 
     def partial_fit(self, X, y, _=None):
         self._init()
-        sleep(self.latency * 1.5 * len(X))
+        sleep(self.latency * 1.0 * len(X))
         return self
 
     def fit(self, X, y, _=None):
@@ -78,7 +78,7 @@ class ConstantFunction(BaseEstimator):
 
     def score(self, X, y, prefix=""):
         self._init()
-        sleep(self.latency * 1.0 * len(X))
+        sleep(self.latency * len(X) / 1.5)
         self._score_calls += 1
         score = self.value
 
@@ -115,7 +115,6 @@ def tune_ray(
         n_iter=n_params,
         random_state=42,
         refit=False,
-        n_jobs=n_jobs,
     )
 
     start = time()
@@ -237,7 +236,7 @@ def get_meta(n_jobs):
     n_params = 100
     max_epochs = 100
 
-    clf = ConstantFunction(latency=0.1 / 50e3, n_jobs=n_jobs, max_iter=max_epochs)
+    clf = ConstantFunction(latency=1 / 50e3, n_jobs=n_jobs, max_iter=max_epochs)
 
     params = {"value": uniform(0, 1)}
 
@@ -248,13 +247,12 @@ def get_meta(n_jobs):
 def main(n_jobs):
     clf, args, meta = get_meta(n_jobs)
 
-    sklearn_search, sklearn_data = tune_scikitlearn(clf, *args, **meta)
-    pprint(sklearn_data)
-    dask_search, dask_data = tune_dask(clf, *args, **meta)
-    pprint(dask_data)
-
     ray_search, ray_data = tune_ray(clf, *args, **meta)
     pprint(ray_data)
+    dask_search, dask_data = tune_dask(clf, *args, **meta)
+    pprint(dask_data)
+    sklearn_search, sklearn_data = tune_scikitlearn(clf, *args, **meta)
+    pprint(sklearn_data)
 
     df = pd.DataFrame([dask_data, ray_data, sklearn_data])
     df.to_csv(f"out/final-{meta['n_jobs']}.csv")
@@ -270,17 +268,16 @@ def main(n_jobs):
 
 if __name__ == "__main__":
     import sys
-    n_jobs = sys.argv[1]
+    import ray
+
+    n_jobs = sys.argv[1]  # ran with n_jobs=8
     ans = input(f"n_jobs = {n_jobs}. Continue? ")
     if ans.lower() != "y":
         print("Okay, ending")
         sys.exit(1)
     n_jobs = int(n_jobs)
 
-    import ray
-
-    #  ray.init(num_cpus=meta["n_jobs"])
-    ray.init(address="auto", redis_password="5241590000000000")
+    #  ray.init(address="auto", redis_password="5241590000000000")
     print("Ray initialized")
 
     cluster = LocalCluster(n_workers=n_jobs, threads_per_worker=1)
@@ -288,6 +285,10 @@ if __name__ == "__main__":
     #  client = Client("localhost:8786")
     print("Dask initialized")
 
-    #  for n_jobs in [1, 2, 4, 8, 16, 24, 32]:
     cluster.scale(n_jobs)
-    main(n_jobs)
+    #  ray.init(num_cpus=1)
+    ray.init(address="auto", redis_password="5241590000000000")
+    try:
+        main(n_jobs)
+    except KeyboardInterrupt:
+        ray.shutdown()
